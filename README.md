@@ -10,6 +10,13 @@ Fully compatible with **Keycloak 22.0.1+** and implemented using the official Ke
 
 * Custom Protocol Mapper for Keycloak 22.0.1 and above
 * Builds a JSON object from request parameters (`custom_value.*`)
+* **Supports complex data structures:**
+  * JSON objects (nested structures)
+  * JSON arrays
+  * Booleans
+  * Integers
+  * Decimals (doubles)
+  * Strings
 * Dynamically injects the object into tokens at runtime
 * Supports Access Token, ID Token, and UserInfo Token
 * Configurable claim name via Admin Console
@@ -92,7 +99,18 @@ Save the configuration.
 
 Send request parameters prefixed with `custom_value.` when requesting a token. Each parameter becomes a field inside a JSON object.
 
-### Example Token Request
+### Supported Value Types
+
+| Type        | Example Value                          | Parsed As               |
+| ----------- | -------------------------------------- | ----------------------- |
+| JSON Object | `{"name":"John","age":30}`             | `Map<String, Object>`   |
+| JSON Array  | `["admin","user","guest"]`             | `List<Object>`          |
+| Boolean     | `true` or `false`                      | `Boolean`               |
+| Integer     | `42`                                   | `Integer`               |
+| Decimal     | `3.14`                                 | `Double`                |
+| String      | `hello`                                | `String`                |
+
+### Example Token Request (Simple Values)
 
 ```http
 POST /realms/{realm}/protocol/openid-connect/token
@@ -103,32 +121,86 @@ client_id=my-client
 &grant_type=client_credentials
 &custom_value.id=1
 &custom_value.role=admin
+&custom_value.active=true
 ```
 
 ### Resulting Token Claim
-
-If the configured claim name is `customObject`, the token will contain:
 
 ```json
 {
   "customObject": {
     "id": 1,
-    "role": "admin"
+    "role": "admin",
+    "active": true
   }
 }
 ```
 
-> Numeric values are automatically parsed as integers when possible.
+### Example Token Request (Complex Structures)
+
+```http
+POST /realms/{realm}/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+client_id=my-client
+&client_secret=secret
+&grant_type=client_credentials
+&custom_value.user={"name":"John","age":30,"email":"john@example.com"}
+&custom_value.roles=["admin","user","manager"]
+&custom_value.permissions={"read":true,"write":true,"delete":false}
+&custom_value.score=95.5
+&custom_value.verified=true
+```
+
+### Resulting Token Claim
+
+```json
+{
+  "customObject": {
+    "user": {
+      "name": "John",
+      "age": 30,
+      "email": "john@example.com"
+    },
+    "roles": ["admin", "user", "manager"],
+    "permissions": {
+      "read": true,
+      "write": true,
+      "delete": false
+    },
+    "score": 95.5,
+    "verified": true
+  }
+}
+```
+
+### cURL Example
+
+```bash
+curl -X POST "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "client_id=my-client" \
+  -d "client_secret=secret" \
+  -d "grant_type=client_credentials" \
+  -d 'custom_value.profile={"name":"Alice","department":"Engineering"}' \
+  -d 'custom_value.tags=["vip","enterprise"]' \
+  -d 'custom_value.level=5' \
+  -d 'custom_value.premium=true'
+```
 
 ---
 
 ## How It Works
 
-* Reads decoded form parameters from the token request
-* Filters parameters starting with `custom_value.`
-* Removes the prefix and builds a `Map<String, Object>`
-* Attempts integer conversion for numeric values
-* Injects the object into the token under the configured claim name
+1. Reads decoded form parameters from the token request
+2. Filters parameters starting with `custom_value.`
+3. Removes the prefix and parses each value:
+   - If value looks like JSON (`{...}` or `[...]`), parse as JSON object/array
+   - If value is `true`/`false`, parse as boolean
+   - If value is numeric, parse as integer or double
+   - Otherwise, keep as string
+4. Builds a `Map<String, Object>` with all parsed values
+5. Injects the object into the token under the configured claim name
 
 ---
 
@@ -136,17 +208,36 @@ If the configured claim name is `customObject`, the token will contain:
 
 * Do **not** expose sensitive or unvalidated user input
 * Always use HTTPS for token requests
+* Validate JSON input on the client side before sending
+* Be cautious with deeply nested structures (potential for large tokens)
 * Extend validation logic if mapping user-controlled data
 
 ---
 
-## Extensibility
+## Troubleshooting
 
-You can extend this mapper to:
+### JSON not being parsed
 
-* Support nested objects or arrays
-* Read values from headers or session attributes
-* Add conditional logic per client or realm
+Ensure your JSON values are properly URL-encoded when sending via form parameters:
+
+```bash
+# Correct - URL encoded
+custom_value.data=%7B%22key%22%3A%22value%22%7D
+
+# Or use single quotes in curl to prevent shell interpretation
+-d 'custom_value.data={"key":"value"}'
+```
+
+### Value treated as string instead of number
+
+The mapper attempts to parse values in this order:
+1. JSON object/array (if starts with `{` or `[`)
+2. Boolean (if `true` or `false`)
+3. Integer (if all digits)
+4. Double (if contains decimal point)
+5. String (fallback)
+
+If parsing fails at any step, it falls back to the next type.
 
 ---
 
